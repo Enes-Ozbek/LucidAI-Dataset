@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""MayI dataset preparation.
+"""LucidAI-Dataset preparation.
 
-download -> English + short filter -> dedup -> sample -> stratified split (seed 42) -> cap repeated calls -> A/B inputs
+download -> English + length bucket filter -> dedup -> stratified split (seed 42, repeated calls go to train) -> A/B inputs
 
 Main data: ProCreations/auto-1b-data: proposed agent tool calls judged in context (the user's
 request and the agent's earlier steps), labeled approve/deny (Apache-2.0).
 Outside test sets, never used for training:
   - ProCreations/approve-or-deny: the audited benchmark built for auto-1b-data (Apache-2.0).
   - karanxa/agent-action-safety-dataset ("saroku"): tool calls labeled safe/unsafe by a
-    different generator, with rules instead of a user request (Apache-2.0); a 3,000-row sample.
+    different generator, with rules instead of a user request (Apache-2.0).
+
+Every clean row is kept: nothing is sampled or capped unless --max-rows, --max-per-call or a
+length limit asks for it. The CSVs are gzip-compressed, and a file over 49 MB is saved in parts
+(train_1.csv.gz, train_2.csv.gz, ...) because GitHub refuses files over 100 MB. pandas reads
+each part with pd.read_csv; pd.concat joins them.
 
 Labels everywhere: 1 = deny, 0 = allow (approve).
 
@@ -20,8 +25,11 @@ Run in Colab (HuggingFace is reachable there; the main train file is 1 GB):
 
 import argparse
 import csv
+import gzip
 import hashlib
+import io
 import json
+import math
 import re
 import statistics
 import sys
@@ -43,8 +51,8 @@ SOURCES = {
 LABEL_TEXT = {0: "allow", 1: "deny"}
 PARQUET_COLUMNS = ["label", "user_request", "history", "call", "category", "difficulty", "rationale",
                    "framework", "domain", "lang", "length_bucket", "is_long", "gen_mode", "subset"]
-CSV_COLUMNS = ["id", "input_a", "input_b", "label", "label_text", "difficulty", "category", "framework",
-               "domain", "gen_mode", "call_has_both_labels", "rationale", "source"]
+CSV_COLUMNS = ["id", "input_a", "input_b", "label", "label_text", "difficulty", "length_bucket", "category",
+               "framework", "domain", "gen_mode", "call_has_both_labels", "rationale", "source"]
 
 
 # ---------------------------------------------------------------- download / load
@@ -75,7 +83,7 @@ def read_jsonl(path, stats, args):
 
 
 def read_parquet(path, stats, args):
-    """Yield the English, short rows of a parquet file, one batch at a time.
+    """Yield the English rows in the kept length buckets of a parquet file, one batch at a time.
 
     The language and length checks use the dataset's own `lang`, `is_long` and `length_bucket`
     columns and run on whole batches before any row becomes a Python dict: the train file is
@@ -98,7 +106,7 @@ def read_parquet(path, stats, args):
         add("rows_in_files", batch.num_rows)
         add("dropped_not_english_lang", batch.num_rows - pc.sum(english).as_py())
         add("dropped_long_context", pc.sum(pc.and_(english, pc.invert(not_long))).as_py() or 0)
-        add("dropped_not_short_bucket", pc.sum(pc.and_(pc.and_(english, not_long), pc.invert(in_bucket))).as_py() or 0)
+        add("dropped_length_bucket", pc.sum(pc.and_(pc.and_(english, not_long), pc.invert(in_bucket))).as_py() or 0)
         yield from batch.filter(pc.and_(pc.and_(english, not_long), in_bucket)).to_pylist()
 
 
@@ -120,6 +128,7 @@ def from_auto1b(row, origin, source):
         "fields": {"call": row.get("call"), "user_request": row.get("user_request"),
                    "history": row.get("history")},
         "meta": {"category": row.get("category"), "difficulty": row.get("difficulty") or "unknown",
+                 "length_bucket": row.get("length_bucket"),
                  "rationale": row.get("rationale"), "framework": row.get("framework"),
                  "domain": row.get("domain"), "gen_mode": row.get("gen_mode"), "origin_split": origin},
     }
@@ -154,7 +163,7 @@ def from_saroku(row, origin, source):
         "fields": {"call": action, "user_request": request, "history": None,
                    "context": USER_TASK.sub("", context).strip() if task and request == task.group(1) else context,
                    "rules": [r for r in (row.get("constraints") or []) if isinstance(r, str)]},
-        "meta": {"category": row.get("property") or "safe", "difficulty": "unknown",
+        "meta": {"category": row.get("property") or "safe", "difficulty": "unknown", "length_bucket": None,
                  "rationale": row.get("reason"), "framework": None, "domain": row.get("domain"),
                  "gen_mode": None, "origin_split": origin},
     }
@@ -289,11 +298,11 @@ def apply_filters(examples, args, english, stats, dropped):
             reasons["not_english"] += 1
             dropped.append({**ex, "dropped_because": f"not_english ({why})"})
             continue
-        if len(ex["input_a"]) > args.max_call_chars:
+        if args.max_call_chars and len(ex["input_a"]) > args.max_call_chars:
             reasons["call_too_long"] += 1
             dropped.append({**ex, "dropped_because": "call_too_long"})
             continue
-        if len(ex["input_b"]) > args.max_input_chars:
+        if args.max_input_chars and len(ex["input_b"]) > args.max_input_chars:
             reasons["input_too_long"] += 1
             dropped.append({**ex, "dropped_because": "input_too_long"})
             continue
@@ -414,29 +423,52 @@ def split(examples, args, stats):
 
     Examples with the same tool call form one group and always land in the same split, so a
     format-A model cannot pass the test by memorising a call it saw in training. Groups are
-    stratified by label and difficulty. Then each call is capped at --max-per-call rows.
+    stratified by label and difficulty.
+
+    The generator wrote a few calls hundreds of times with different requests (`git reset --hard
+    HEAD` once filled 6.6% of a validation split), and in val or test such a call would sway the
+    score. Calls with more than --train-only-calls rows therefore all go to train; nothing is
+    dropped, and val and test still get --val-size and --test-size of all rows. --max-per-call
+    can cap every call instead.
     """
-    groups, keys, strata = group_strata(examples, "difficulty")
+    by_call = defaultdict(list)
+    for i, ex in enumerate(examples):
+        by_call[loose(ex["input_a"])].append(i)
+    limit = args.train_only_calls
+    big = [k for k, v in by_call.items() if limit and len(v) > limit]
+    big_rows = sorted(i for k in big for i in by_call[k])
+    big_set = set(big_rows)
+    rest_idx = [i for i in range(len(examples)) if i not in big_set]
+    share = len(rest_idx) / len(examples)
+    test_size, val_size = args.test_size / share, args.val_size / share
+    if test_size + val_size >= 1:
+        raise SystemExit(f"--train-only-calls {limit} leaves too few rows for val and test")
+
+    groups, keys, strata = group_strata([examples[i] for i in rest_idx], "difficulty")
     idx = list(range(len(keys)))
-    rest, test = train_test_split(idx, test_size=args.test_size, random_state=args.seed, stratify=strata)
-    val_share = args.val_size / (1 - args.test_size)
-    train, val = train_test_split(rest, test_size=val_share, random_state=args.seed,
+    rest, test = train_test_split(idx, test_size=test_size, random_state=args.seed, stratify=strata)
+    train, val = train_test_split(rest, test_size=val_size / (1 - test_size), random_state=args.seed,
                                   stratify=[strata[i] for i in rest])
 
     out = {}
     for name, part in (("train", train), ("val", val), ("test", test)):
-        rows = sorted(i for g in part for i in groups[keys[g]])  # keep source order inside a split
+        rows = [rest_idx[i] for g in part for i in groups[keys[g]]]
+        if name == "train":
+            rows += big_rows
+        rows.sort()  # keep source order inside a split
         out[name] = cap_calls([examples[i] for i in rows], args.max_per_call, args.seed)
 
     # calls that are approved in one context and denied in another: format A cannot get these right
-    mixed = {k for k in keys if len({examples[i]["label"] for i in groups[k]}) > 1}
-    for k in keys:
-        for i in groups[k]:
+    mixed = {k for k, v in by_call.items() if len({examples[i]["label"] for i in v}) > 1}
+    for k, v in by_call.items():
+        for i in v:
             examples[i]["meta"]["call_has_both_labels"] = k in mixed
     kept = [ex for rows in out.values() for ex in rows]
-    stats["call_groups"] = len(keys)
-    stats["largest_call_groups"] = sorted((len(v) for v in groups.values()), reverse=True)[:5]
-    stats["calls_over_cap"] = sum(len(v) > args.max_per_call > 0 for v in groups.values())
+    stats["call_groups"] = len(by_call)
+    stats["largest_call_groups"] = sorted((len(v) for v in by_call.values()), reverse=True)[:5]
+    stats["calls_to_train_only"] = len(big)
+    stats["rows_to_train_only"] = len(big_rows)
+    stats["calls_over_cap"] = sum(len(v) > args.max_per_call > 0 for v in by_call.values())
     stats["dropped_by_call_cap"] = len(examples) - len(kept)
     stats["in_splits"] = len(kept)
     stats["calls_with_both_labels"] = len(mixed)
@@ -454,16 +486,40 @@ def length_summary(texts):
             "p95": chars[int(0.95 * (len(chars) - 1))], "max": chars[-1]}
 
 
-def write_split(rows, folder, name):
-    with open(folder / f"{name}.csv", "w", encoding="utf-8", newline="") as f:
+def write_csv_gz(rows, path):
+    """The gzip header holds no file name or time, so reruns give the same bytes."""
+    with open(path, "wb") as raw, \
+            gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as packed, \
+            io.TextIOWrapper(packed, encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(CSV_COLUMNS)
         for ex in rows:
             m = ex["meta"]
             writer.writerow([ex["id"], ex["input_a"], ex["input_b"], ex["label"], LABEL_TEXT[ex["label"]],
-                             m.get("difficulty"), m.get("category"), m.get("framework"), m.get("domain"),
-                             m.get("gen_mode"), m.get("call_has_both_labels", False), m.get("rationale"),
-                             ex["source"]])
+                             m.get("difficulty"), m.get("length_bucket"), m.get("category"), m.get("framework"),
+                             m.get("domain"), m.get("gen_mode"), m.get("call_has_both_labels", False),
+                             m.get("rationale"), ex["source"]])
+
+
+def write_split(rows, folder, name, max_mb=0):
+    """Write <name>.csv.gz, or <name>_1.csv.gz, <name>_2.csv.gz, ... when one file would be over
+    max_mb (GitHub warns about files over 50 MB and refuses files over 100 MB). Returns the file names."""
+    for old in [folder / f"{name}.csv", *folder.glob(f"{name}_[0-9]*.csv.gz")]:
+        old.unlink(missing_ok=True)  # plain CSV or parts left by an earlier run
+    path = folder / f"{name}.csv.gz"
+    write_csv_gz(rows, path)
+    size = path.stat().st_size
+    if not max_mb or size <= max_mb * 1e6:
+        return [path.name]
+    path.unlink()
+    parts = math.ceil(size / (0.9 * max_mb * 1e6))
+    per = math.ceil(len(rows) / parts)
+    names = []
+    for k in range(parts):
+        part = folder / f"{name}_{k + 1}.csv.gz"
+        write_csv_gz(rows[k * per:(k + 1) * per], part)
+        names.append(part.name)
+    return names
 
 
 def describe(rows):
@@ -473,6 +529,7 @@ def describe(rows):
         "labels": dict(sorted(labels.items())),
         "deny_share": round(labels["deny"] / len(rows), 4) if rows else None,
         "difficulties": dict(Counter(str(ex["meta"].get("difficulty")) for ex in rows).most_common()),
+        "length_buckets": dict(Counter(str(ex["meta"].get("length_bucket")) for ex in rows).most_common()),
         "categories": dict(Counter(str(ex["meta"].get("category")) for ex in rows).most_common()),
         "frameworks": dict(Counter(str(ex["meta"].get("framework")) for ex in rows).most_common()),
         "chars_input_a": length_summary([ex["input_a"] for ex in rows]),
@@ -483,15 +540,17 @@ def describe(rows):
 def write_report(stats, path):
     """Human-readable summary of stats.json, for the README and the presentation."""
     s = stats["auto1b"]
-    lines = ["# MayI dataset report", "", "## Main data (auto-1b-data)", "",
+    lines = ["# LucidAI-Dataset report", "", "## Main data (auto-1b-data)", "",
              "| step | rows |", "|---|---:|",
              f"| rows in the files | {s['rows_in_files']} |",
              f"| dropped: user language is not English | -{s['dropped_not_english_lang']} |",
-             f"| dropped: long-context rows (up to 65k tokens) | -{s['dropped_long_context']} |",
-             f"| dropped: not in the short length bucket | -{s['dropped_not_short_bucket']} |"]
+             f"| dropped: long-context rows (up to 65k tokens) | -{s['dropped_long_context']} |"]
+    if s.get("dropped_length_bucket"):
+        lines.append(f"| dropped: length bucket not {stats['settings']['length_buckets'].replace(',', ', ')} | "
+                     f"-{s['dropped_length_bucket']} |")
     for reason, n in {**s["dropped_by_filter"], **s["dropped_by_dedup"]}.items():
         lines.append(f"| dropped: {reason.replace('_', ' ')} | -{n} |")
-    lines.append(f"| clean English short rows | {s['after_dedup']} |")
+    lines.append(f"| clean English rows | {s['after_dedup']} |")
     if "sampled" in s:
         lines.append(f"| sampled for the splits (`--max-rows`) | {s['sampled']} |")
     cap = stats["settings"]["max_per_call"]
@@ -517,23 +576,31 @@ def write_report(stats, path):
                   f"train/test {shared['train_test']}, val/test {shared['val_test']}.",
               f"Calls that appear with both labels (only the user request or history decides): "
               f"{s['calls_with_both_labels']} calls, {s['rows_in_both_label_calls']} rows.",
-              f"Most repeated tool calls before the cap: {', '.join(map(str, s['largest_call_groups']))} rows; "
-              f"{s['calls_over_cap']} calls were cut to {cap} rows."]
+              f"Most repeated tool calls: {', '.join(map(str, s['largest_call_groups']))} rows."]
+    if s.get("calls_to_train_only"):
+        lines.append(f"Tool calls seen more than {stats['settings']['train_only_calls']} times all went to train "
+                     f"(`--train-only-calls`): {s['calls_to_train_only']} calls, {s['rows_to_train_only']} rows.")
+    if s.get("calls_over_cap"):
+        lines.append(f"{s['calls_over_cap']} calls were cut to {cap} rows (`--max-per-call`).")
+
+    files = "; ".join(f"{n}: {' + '.join(stats[n]['files'])}" for n in names if "files" in stats[n])
+    lines += ["", f"Files: {files}."]
 
     for key, column, title in (("difficulties", "difficulty", "Difficulty"),
+                               ("length_buckets", "length_bucket", "Length bucket (how much agent history)"),
                                ("frameworks", "framework", "Agent framework"),
                                ("categories", "category", "Categories (each one gives the label away: error analysis only)")):
-        values = {v for n in ("train", "val", "test") for v in stats[n][key]}
+        values = {v for n in ("train", "val", "test") for v in stats[n].get(key, {})}
         lines += ["", f"## {title}", "", f"| {column} | train | val | test |", "|---|---:|---:|---:|"]
-        for v in sorted(values, key=lambda v: (-stats["train"][key].get(v, 0), v)):
-            lines.append(f"| {v} | " + " | ".join(str(stats[n][key].get(v, 0)) for n in ("train", "val", "test")) + " |")
+        for v in sorted(values, key=lambda v: (-stats["train"].get(key, {}).get(v, 0), v)):
+            lines.append(f"| {v} | " + " | ".join(str(stats[n].get(key, {}).get(v, 0)) for n in ("train", "val", "test")) + " |")
 
     for name, title in (("approve_or_deny", "Outside test: approve-or-deny benchmark"),
                         ("saroku", "Outside test: saroku")):
         if name in stats:
             o = stats[name]
             parts = [f"{o['rows_in_files']} rows in the files"]
-            for key in ("dropped_not_english_lang", "dropped_long_context", "dropped_not_short_bucket"):
+            for key in ("dropped_not_english_lang", "dropped_long_context", "dropped_length_bucket"):
                 if o.get(key):
                     parts.append(f"{key.replace('dropped_', '').replace('_', ' ')} -{o[key]}")
             for reason, n in {**o["dropped_by_filter"], **o["dropped_by_dedup"]}.items():
@@ -572,19 +639,26 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-size", type=float, default=0.15)
     parser.add_argument("--test-size", type=float, default=0.15)
-    parser.add_argument("--length-buckets", default="short",
+    parser.add_argument("--length-buckets", default="short,medium,long",
                         help="auto-1b-data length buckets to keep (short, medium, long), comma separated")
-    parser.add_argument("--max-call-chars", type=int, default=500, help="'short' limit for format A")
-    parser.add_argument("--max-input-chars", type=int, default=1200,
-                        help="'short' limit for format B (then 99% of rows fit in about 410 DistilBERT tokens)")
-    parser.add_argument("--max-rows", type=int, default=60000,
+    parser.add_argument("--max-call-chars", type=int, default=0,
+                        help="drop rows whose format A is longer than this (0 = no limit)")
+    parser.add_argument("--max-input-chars", type=int, default=0,
+                        help="drop rows whose format B is longer than this (0 = no limit)")
+    parser.add_argument("--max-rows", type=int, default=0,
                         help="stratified sample of the clean main data before splitting (0 = keep all)")
-    parser.add_argument("--max-per-call", type=int, default=20,
+    parser.add_argument("--train-only-calls", type=int, default=20,
+                        help="tool calls with more rows than this all go to train (0 = split them like the rest)")
+    parser.add_argument("--max-per-call", type=int, default=0,
                         help="keep at most this many rows with the same tool call (0 = no cap)")
     parser.add_argument("--min-vocab-share", type=float, default=0.7,
                         help="share of prose words that must be in the English vocabulary")
     parser.add_argument("--min-en-prob", type=float, default=0.5, help="langdetect probability of English")
-    parser.add_argument("--saroku-rows", type=int, default=3000, help="size of the saroku outside test")
+    parser.add_argument("--saroku-rows", type=int, default=0,
+                        help="sample the saroku outside test down to this many rows (0 = keep all)")
+    parser.add_argument("--max-file-mb", type=float, default=49,
+                        help="split a data file into parts above this size (GitHub warns above 50 MB and refuses "
+                             "files over 100 MB; 0 = never)")
     parser.add_argument("--skip-outside-tests", action="store_true")
     args = parser.parse_args()
 
@@ -604,8 +678,8 @@ def main():
         s["sampled"] = len(examples)
     parts = split(examples, args, s)
     for name, rows in parts.items():
-        write_split(rows, args.out, name)
         stats[name] = describe(rows)
+        stats[name]["files"] = write_split(rows, args.out, name, args.max_file_mb)
 
     # leakage check: no tool call (loose format A) shared between splits
     seen = {name: {loose(ex["input_a"]) for ex in rows} for name, rows in parts.items()}
@@ -619,13 +693,16 @@ def main():
     if not args.skip_outside_tests:
         main_calls = set().union(*seen.values())
         bench = outside_test("approve_or_deny", args, english, main_calls, stats, dropped)
-        write_split(bench, args.out, "ood_approve_or_deny")
         stats["ood_approve_or_deny"] = describe(bench)
+        stats["ood_approve_or_deny"]["files"] = write_split(bench, args.out, "ood_approve_or_deny", args.max_file_mb)
         saroku = outside_test("saroku", args, english, main_calls, stats, dropped, args.saroku_rows)
-        write_split(saroku, args.out, "ood_saroku")
         stats["ood_saroku"] = describe(saroku)
+        stats["ood_saroku"]["files"] = write_split(saroku, args.out, "ood_saroku", args.max_file_mb)
 
-    with open(args.out / "dropped.jsonl", "w", encoding="utf-8") as f:
+    (args.out / "dropped.jsonl").unlink(missing_ok=True)  # plain file from an earlier version
+    with open(args.out / "dropped.jsonl.gz", "wb") as raw, \
+            gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as packed, \
+            io.TextIOWrapper(packed, encoding="utf-8") as f:
         for ex in dropped:
             f.write(json.dumps({"id": ex["id"], "dropped_because": ex["dropped_because"],
                                 "label": ex["label"], "input_b": ex["input_b"]}, ensure_ascii=False) + "\n")

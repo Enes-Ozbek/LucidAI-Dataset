@@ -5,15 +5,16 @@
 
 Each CSV uses the columns of external_tests/external_tests_template.csv. Rows whose author is
 EXAMPLE are skipped. A row is rejected if its label is not allow/deny, its user request is not
-English, it is longer than the limits used for the main data, it duplicates another row with a
-different label, or its tool call already appears in train/val/test (then it would not be an
-external test).
+English, it is longer than the length limits used for the main data (if it had any), it
+duplicates another row with a different label, or its tool call already appears in
+train/val/test (then it would not be an external test).
 
-Writes data/external_test.csv and data/external_test_report.md.
+Writes data/external_test.csv.gz and data/external_test_report.md.
 """
 
 import argparse
 import csv
+import gzip
 import json
 import re
 import sys
@@ -40,23 +41,38 @@ def read_rows(paths):
                 yield path.name, line_no, {k: (v or "").strip() for k, v in row.items() if k}
 
 
+def split_files(folder, name):
+    """data/<name>.csv.gz, its parts <name>_1.csv.gz, <name>_2.csv.gz, ..., or a plain <name>.csv."""
+    if (folder / f"{name}.csv.gz").exists():
+        return [folder / f"{name}.csv.gz"]
+    parts = sorted(folder.glob(f"{name}_[0-9]*.csv.gz"), key=lambda p: int(p.name[len(name) + 1:].split(".")[0]))
+    return parts or [folder / f"{name}.csv"]
+
+
+def open_file(path):
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt", encoding="utf-8", newline="")
+    return open(path, encoding="utf-8", newline="")
+
+
 def main_data(folder):
     """Calls already in train/val/test, and their user requests as English reference text."""
     known, reference = {}, []
     csv.field_size_limit(10_000_000)
     for split in ("train", "val", "test"):
-        with open(folder / f"{split}.csv", encoding="utf-8", newline="") as f:
-            for row in csv.DictReader(f):
-                known.setdefault(loose(row["input_a"]), split)
-                request = USER_REQUEST.search(row["input_b"])
-                reference.append({"fields": {"user_request": request.group(1) if request else ""}})
+        for path in split_files(folder, split):
+            with open_file(path) as f:
+                for row in csv.DictReader(f):
+                    known.setdefault(loose(row["input_a"]), split)
+                    request = USER_REQUEST.search(row["input_b"])
+                    reference.append({"fields": {"user_request": request.group(1) if request else ""}})
     return known, reference
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("csv_files", nargs="+", type=Path)
-    parser.add_argument("--data", type=Path, default=HERE / "data", help="folder with train/val/test.csv")
+    parser.add_argument("--data", type=Path, default=HERE / "data", help="folder with train/val/test.csv.gz")
     args = parser.parse_args()
 
     settings = json.load(open(args.data / "stats.json", encoding="utf-8"))["settings"]
@@ -89,7 +105,8 @@ def main():
             "source": "team",
             "label": label,
             "fields": fields,
-            "meta": {"category": row.get("category") or None, "difficulty": "unknown", "framework": None,
+            "meta": {"category": row.get("category") or None, "difficulty": "unknown", "length_bucket": None,
+                     "framework": None,
                      "domain": None, "gen_mode": None, "rationale": row.get("notes") or None,
                      "author": row["author"], "origin": where, "call_has_both_labels": False},
             "input_a": build_input(fields, "A"),
@@ -98,9 +115,9 @@ def main():
         ok, why = english(ex)
         if not ok:
             problems.append(f"{where}: the user request is not English ({why})")
-        elif len(ex["input_a"]) > max_call:
+        elif max_call and len(ex["input_a"]) > max_call:
             problems.append(f"{where}: the tool call is {len(ex['input_a'])} chars, limit is {max_call}")
-        elif len(ex["input_b"]) > max_input:
+        elif max_input and len(ex["input_b"]) > max_input:
             problems.append(f"{where}: call plus request and history is {len(ex['input_b'])} chars, limit is {max_input}")
         elif loose(ex["input_a"]) in known:
             problems.append(f"{where}: the same tool call is already in {known[loose(ex['input_a'])]}; write a new one")

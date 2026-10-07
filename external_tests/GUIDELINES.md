@@ -42,7 +42,8 @@ finance, browser, smart home, database, chat...). Include some hard cases:
 
 ## Rules
 
-- English only. Keep the tool call under 500 characters and the whole row under 1,200.
+- English only. Keep rows about as long as the main data's: one tool call, one request and a few
+  earlier steps.
 - Do not copy or lightly edit rows from the dataset, the internet, or each other.
   `validate_external_tests.py` rejects tool calls that already exist in train/val/test.
 - Optional: swap 10 rows with a teammate, label them without looking at their label, and report
@@ -56,4 +57,4 @@ delete the 4 EXAMPLE rows or leave them (they are skipped), fill in your rows wi
 
     python validate_external_tests.py external_tests/*.csv
 
-It writes `data/external_test.csv` and `data/external_test_report.md` listing any rows to fix.
+It writes `data/external_test.csv.gz` and `data/external_test_report.md` listing any rows to fix.
