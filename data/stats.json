@@ -1,0 +1,437 @@
+{
+  "settings": {
+    "raw_dir": "/content/raw",
+    "out": "/content/data",
+    "no_download": "False",
+    "main_files": "train.parquet,validation.parquet",
+    "seed": "42",
+    "val_size": "0.15",
+    "test_size": "0.15",
+    "length_buckets": "short",
+    "max_call_chars": "500",
+    "max_input_chars": "1200",
+    "max_rows": "60000",
+    "max_per_call": "20",
+    "min_vocab_share": "0.7",
+    "min_en_prob": "0.5",
+    "saroku_rows": "3000",
+    "skip_outside_tests": "False"
+  },
+  "auto1b": {
+    "rows_in_files": 725000,
+    "dropped_not_english_lang": 223222,
+    "dropped_long_context": 17077,
+    "dropped_not_short_bucket": 321251,
+    "loaded": 163450,
+    "skipped_unusable": 0,
+    "english_vocabulary_words": 10362,
+    "english_check": {
+      "english_function_words": 158054,
+      "english_vocabulary": 2681,
+      "detected_es": 1547,
+      "detected_fr": 544,
+      "too_little_prose_to_check": 285,
+      "detected_de": 138,
+      "non_ascii_text": 92,
+      "detected_it": 40,
+      "detected_pt": 40,
+      "detected_ca": 7,
+      "detected_tr": 5,
+      "detected_nl": 5,
+      "detected_pl": 4,
+      "detected_hr": 3,
+      "detected_sv": 2,
+      "detected_af": 1,
+      "detected_hu": 1,
+      "detected_id": 1
+    },
+    "dropped_by_filter": {
+      "not_english": 2430,
+      "call_too_long": 504,
+      "input_too_long": 419
+    },
+    "after_filter": 160097,
+    "dropped_by_dedup": {
+      "exact_duplicate": 1,
+      "near_duplicate": 4
+    },
+    "after_dedup": 160092,
+    "sampled": 58516,
+    "call_groups": 50194,
+    "largest_call_groups": [
+      597,
+      181,
+      171,
+      163,
+      144
+    ],
+    "calls_over_cap": 47,
+    "dropped_by_call_cap": 2260,
+    "in_splits": 56256,
+    "calls_with_both_labels": 1356,
+    "rows_in_both_label_calls": 4539
+  },
+  "train": {
+    "rows": 39519,
+    "labels": {
+      "allow": 19504,
+      "deny": 20015
+    },
+    "deny_share": 0.5065,
+    "difficulties": {
+      "easy": 14298,
+      "medium": 13478,
+      "hard": 11743
+    },
+    "categories": {
+      "explicitly_authorized": 2449,
+      "routine_benign": 2419,
+      "network_is_fine": 2365,
+      "scary_but_scoped": 2259,
+      "scoped_destructive": 2242,
+      "legit_remote_write": 2029,
+      "recovery_action": 2010,
+      "destructive_filesystem": 2009,
+      "privileged_but_normal": 1986,
+      "read_only_sensitive": 1745,
+      "irreversible_remote": 1717,
+      "abuse_spam_privacy": 1580,
+      "scope_violation": 1541,
+      "data_destruction_unrequested": 1484,
+      "malicious_install": 1436,
+      "physical_financial": 1373,
+      "supply_chain": 1357,
+      "obfuscated_payload": 1333,
+      "credential_exfiltration": 1315,
+      "privilege_escalation": 1274,
+      "covering_tracks": 1263,
+      "prompt_injection": 1229,
+      "self_permission_tamper": 1104
+    },
+    "frameworks": {
+      "ci_agent": 2539,
+      "devops_agent": 2531,
+      "mcp_postgres": 2516,
+      "mcp_slack": 2426,
+      "email_calendar": 2365,
+      "mcp_browser": 2281,
+      "cursor_agent": 2260,
+      "data_agent": 2247,
+      "langchain": 2245,
+      "codex_cli": 2204,
+      "pkg_agent": 2191,
+      "claude_code": 2157,
+      "finance_agent": 2079,
+      "home_iot": 2066,
+      "mcp_filesystem": 2044,
+      "openai_functions": 1954,
+      "mcp_github": 1847,
+      "computer_use": 1567
+    },
+    "chars_input_a": {
+      "min": 43,
+      "median": 131,
+      "p95": 279,
+      "max": 500
+    },
+    "chars_input_b": {
+      "min": 123,
+      "median": 597,
+      "p95": 889,
+      "max": 1200
+    }
+  },
+  "val": {
+    "rows": 8382,
+    "labels": {
+      "allow": 4144,
+      "deny": 4238
+    },
+    "deny_share": 0.5056,
+    "difficulties": {
+      "easy": 3005,
+      "medium": 2876,
+      "hard": 2501
+    },
+    "categories": {
+      "routine_benign": 524,
+      "explicitly_authorized": 517,
+      "scary_but_scoped": 492,
+      "network_is_fine": 491,
+      "scoped_destructive": 477,
+      "recovery_action": 437,
+      "destructive_filesystem": 435,
+      "legit_remote_write": 421,
+      "privileged_but_normal": 404,
+      "read_only_sensitive": 381,
+      "irreversible_remote": 367,
+      "scope_violation": 351,
+      "abuse_spam_privacy": 338,
+      "obfuscated_payload": 327,
+      "physical_financial": 306,
+      "credential_exfiltration": 283,
+      "privilege_escalation": 273,
+      "data_destruction_unrequested": 272,
+      "malicious_install": 271,
+      "prompt_injection": 265,
+      "covering_tracks": 254,
+      "supply_chain": 249,
+      "self_permission_tamper": 247
+    },
+    "frameworks": {
+      "ci_agent": 536,
+      "devops_agent": 535,
+      "mcp_postgres": 532,
+      "data_agent": 530,
+      "mcp_slack": 510,
+      "claude_code": 495,
+      "mcp_browser": 485,
+      "codex_cli": 482,
+      "email_calendar": 481,
+      "finance_agent": 477,
+      "langchain": 467,
+      "home_iot": 450,
+      "mcp_filesystem": 440,
+      "cursor_agent": 426,
+      "openai_functions": 405,
+      "mcp_github": 404,
+      "pkg_agent": 393,
+      "computer_use": 334
+    },
+    "chars_input_a": {
+      "min": 42,
+      "median": 133.0,
+      "p95": 278,
+      "max": 491
+    },
+    "chars_input_b": {
+      "min": 156,
+      "median": 601.0,
+      "p95": 895,
+      "max": 1196
+    }
+  },
+  "test": {
+    "rows": 8355,
+    "labels": {
+      "allow": 4191,
+      "deny": 4164
+    },
+    "deny_share": 0.4984,
+    "difficulties": {
+      "easy": 3015,
+      "medium": 2873,
+      "hard": 2467
+    },
+    "categories": {
+      "network_is_fine": 523,
+      "routine_benign": 519,
+      "explicitly_authorized": 513,
+      "scoped_destructive": 501,
+      "scary_but_scoped": 458,
+      "legit_remote_write": 439,
+      "read_only_sensitive": 439,
+      "destructive_filesystem": 432,
+      "recovery_action": 421,
+      "privileged_but_normal": 378,
+      "irreversible_remote": 349,
+      "abuse_spam_privacy": 328,
+      "malicious_install": 306,
+      "scope_violation": 306,
+      "obfuscated_payload": 295,
+      "data_destruction_unrequested": 283,
+      "physical_financial": 280,
+      "supply_chain": 279,
+      "privilege_escalation": 276,
+      "covering_tracks": 267,
+      "credential_exfiltration": 258,
+      "self_permission_tamper": 254,
+      "prompt_injection": 251
+    },
+    "frameworks": {
+      "ci_agent": 568,
+      "mcp_browser": 529,
+      "mcp_postgres": 515,
+      "mcp_filesystem": 489,
+      "devops_agent": 482,
+      "mcp_slack": 482,
+      "data_agent": 478,
+      "finance_agent": 477,
+      "email_calendar": 476,
+      "langchain": 472,
+      "claude_code": 470,
+      "cursor_agent": 457,
+      "codex_cli": 445,
+      "pkg_agent": 434,
+      "mcp_github": 426,
+      "home_iot": 418,
+      "openai_functions": 403,
+      "computer_use": 334
+    },
+    "chars_input_a": {
+      "min": 43,
+      "median": 132,
+      "p95": 274,
+      "max": 500
+    },
+    "chars_input_b": {
+      "min": 135,
+      "median": 599,
+      "p95": 885,
+      "max": 1199
+    }
+  },
+  "shared_calls_between_splits": {
+    "train_val": 0,
+    "train_test": 0,
+    "val_test": 0
+  },
+  "approve_or_deny": {
+    "rows_in_files": 3000,
+    "dropped_not_english_lang": 896,
+    "dropped_long_context": 367,
+    "dropped_not_short_bucket": 1077,
+    "loaded": 660,
+    "skipped_unusable": 0,
+    "english_check": {
+      "english_function_words": 638,
+      "english_vocabulary": 9,
+      "detected_fr": 4,
+      "detected_es": 4,
+      "non_ascii_text": 3,
+      "detected_de": 1,
+      "too_little_prose_to_check": 1
+    },
+    "dropped_by_filter": {
+      "not_english": 12,
+      "call_too_long": 7,
+      "input_too_long": 8
+    },
+    "after_filter": 633,
+    "dropped_by_dedup": {},
+    "after_dedup": 633,
+    "dropped_overlap_with_main": 24
+  },
+  "ood_approve_or_deny": {
+    "rows": 609,
+    "labels": {
+      "allow": 347,
+      "deny": 262
+    },
+    "deny_share": 0.4302,
+    "difficulties": {
+      "hard": 254,
+      "medium": 226,
+      "easy": 129
+    },
+    "categories": {
+      "routine_benign": 45,
+      "recovery_action": 40,
+      "read_only_sensitive": 39,
+      "scoped_destructive": 38,
+      "network_is_fine": 38,
+      "legit_remote_write": 38,
+      "scary_but_scoped": 37,
+      "privileged_but_normal": 37,
+      "explicitly_authorized": 34,
+      "data_destruction_unrequested": 23,
+      "credential_exfiltration": 22,
+      "privilege_escalation": 22,
+      "destructive_filesystem": 22,
+      "self_permission_tamper": 20,
+      "scope_violation": 19,
+      "physical_financial": 19,
+      "prompt_injection": 19,
+      "irreversible_remote": 19,
+      "malicious_install": 18,
+      "obfuscated_payload": 18,
+      "abuse_spam_privacy": 17,
+      "supply_chain": 13,
+      "covering_tracks": 9,
+      "other": 3
+    },
+    "frameworks": {
+      "finance_agent": 58,
+      "mcp_postgres": 49,
+      "cursor_agent": 47,
+      "devops_agent": 46,
+      "openai_functions": 46,
+      "mcp_slack": 38,
+      "claude_code": 36,
+      "email_calendar": 33,
+      "mcp_browser": 33,
+      "computer_use": 33,
+      "langchain": 31,
+      "ci_agent": 30,
+      "mcp_github": 29,
+      "data_agent": 29,
+      "mcp_filesystem": 25,
+      "home_iot": 19,
+      "codex_cli": 18,
+      "pkg_agent": 9
+    },
+    "chars_input_a": {
+      "min": 44,
+      "median": 116,
+      "p95": 272,
+      "max": 489
+    },
+    "chars_input_b": {
+      "min": 147,
+      "median": 553,
+      "p95": 961,
+      "max": 1138
+    }
+  },
+  "saroku": {
+    "rows_in_files": 26731,
+    "loaded": 26731,
+    "skipped_unusable": 0,
+    "english_check": {
+      "english_function_words": 19077,
+      "english_vocabulary": 7654
+    },
+    "dropped_by_filter": {},
+    "after_filter": 26731,
+    "dropped_by_dedup": {
+      "near_duplicate": 60
+    },
+    "after_dedup": 26671,
+    "dropped_overlap_with_main": 3,
+    "sampled": 3023
+  },
+  "ood_saroku": {
+    "rows": 3023,
+    "labels": {
+      "allow": 1350,
+      "deny": 1673
+    },
+    "deny_share": 0.5534,
+    "difficulties": {
+      "unknown": 3023
+    },
+    "categories": {
+      "safe": 1350,
+      "policy_violation": 588,
+      "scope_violation": 488,
+      "goal_drift": 226,
+      "corrigibility": 205,
+      "injection": 166
+    },
+    "frameworks": {
+      "None": 3023
+    },
+    "chars_input_a": {
+      "min": 60,
+      "median": 135,
+      "p95": 215,
+      "max": 380
+    },
+    "chars_input_b": {
+      "min": 218,
+      "median": 498,
+      "p95": 641,
+      "max": 821
+    }
+  }
+}
